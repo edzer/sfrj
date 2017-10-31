@@ -1,0 +1,440 @@
+% !TeX root = RJwrapper.tex
+\title{Simple Features for R}
+\author{Edzer Pebesma}
+
+% \SweaveOpts{strip.white=false} 
+
+\definecolor{dark-green}{rgb}{0,0.45,0}
+\definecolor{dark-red}{rgb}{0.85,0.0,0}
+\definecolor{dark-blue}{rgb}{0.0,0.0,0.66}
+
+\newcommand{\geom}[1]{{\color{dark-green} #1}}
+\newcommand{\cls}[1]{{\color{dark-red} #1}}
+\newcommand{\tv}[1]{{\color{dark-blue} #1}}
+
+\maketitle
+
+\abstract{
+Simple features are a standardized way of encoding spatial
+vector data (points, lines, polygons) in computers.  The \pkg{sf}
+package implements simple features in R, and has roughly the same
+capacity for vector data vector as packages \pkg{sp}, \pkg{rgeos}
+and \pkg{rgdal}. We describe the need for this package, its place
+in the R package ecosystem, and its potential to connect R to other
+computer systems. We illustrate this with examples of its use.  }
+
+\section{What are simple features?}
+
+Features can be thought of as ``things'' or objects that have a
+spatial location or extent; they may be physical objects like a
+building, or social conventions like a political state.  {\em Feature
+geometry} refers to the spatial properties (location or extent) of a
+feature, and can be described by a point, a point set, a linestring,
+a set of linestrings, a polygon, a set of polygons, or a combination
+of these. The {\em simple} adjective of {\em simple features}
+refers to the property that linestrings and polygons are built from
+points connected by {\em straight} line segments. Extensions can
+use circle arcs to connect points. Features typically also have
+other properties (temporal properties, color, name, measured quantity), which
+are called {\em feature attributes}. Not all spatial phenomena are
+easy to represent by ``things or objects'': continuous phenoma such
+as water temperature or elevation are better represented as {\em
+functions} mapping from continuous or sampled space (and time) to
+values \citep{scheider}, and are often represented by {\em raster}
+data rather than vector (points, lines, polygons) data.
+
+{\em Simple feature access} \citep{sfa} is an international
+standard for the representation and encoding of spatial data,
+dominantly represented by point, line and polygon geometries. It is
+widely used e.g. by all spatial databases \citep{sfa2}, GeoJSON
+\citep{geojson}, GeoSPARQL \citep{geosparql}, and open source
+libraries that empower the open source geospatial software landscape
+including GDAL \citep{gdal}, GEOS \citep{geos} and liblwgeom (a
+PostGIS component, \citet{postgis}).
+
+\section{The need for a new package}
+
+Package \CRANpkg{sf} \citep{sf} is an R package for reading, writing, handling
+and manipulating simple features in R, reimplementing the vector
+(points, lines, polygons) data handling functionality of packages
+\CRANpkg{sp} \citep{classesmethods, asdar}, \CRANpkg{rgdal}
+\citep{rgdal} and \CRANpkg{rgeos} \citep{rgeos}. However, \pkg{sp}
+has some 400 direct reverse dependencies, and a few thousand indirect
+ones. Why was there a need to write a package with the potential
+to replace it?
+
+First of all, at the time of writing \code{sp} (2003) there was no
+standard for simple features, and the ESRI shapefile was by far the
+dominant file format for exchanging vector data. This file format
+tainted the implementation of line and polygon data in \pkg{sp}.
+The lack of a clear (open) standard for shapefiles, the omnipresence
+of ``bad'' or malformed shapefiles, and the many limitations of the
+ways it can represent spatial data necessarily tainted \pkg{sp},
+for instance in the way it represents holes in polygons, and a lack
+of discipline to register holes with their enclosing outer ring. Such
+ambiguities could influence plotting of data, or communication with
+other systems or libraries.
+
+The {\em simple feature access} standard is now widely adopted,
+but the \pkg{sp} package family has to make assumptions and
+do conversions to load them into R. This means that you cannot
+round-trip data, as of: loading data in R, manipulating them,
+exporting them and getting the same geometries back. With \pkg{sf},
+this is no longer a problem.
+
+A second reason was that external libraries heavily used by R
+packages for reading and writing spatial data (GDAL) and for
+geometrical operations (GEOS) developed into stronger supporting
+the simple feature standard.
+
+A third reason was that the package cluster now known as the
+\CRANpkg{tidyverse} \citep{tidyverse, tidydata}, which includes
+popular packages such as \CRANpkg{dplyr} \citep{dplyr} and
+\CRANpkg{ggplot2} \citep{ggplot2}, does not work well with the
+spatial classes of \pkg{sp}:
+\begin{itemize}
+\item \pkg{tidyverse} packages assume objects to not only
+{\em behave} like \code{data.frame}s (which \pkg{sp} objects
+do by providing methods), but also assume them to {\em be}
+\code{data.frame}s in the sense of being a list with equally sized
+column vectors, which \pkg{sp} does not do (it uses S4).
+\item attempts to ``tidy'' polygon objects for plotting with
+\pkg{ggplot2} (``fortify'') by creating \code{data.frame} objects
+with records for each polygon node (vertex) were neither 
+robust nor efficient.
+\end{itemize}
+A simple (S3) way to store geometries in \code{data.frame} or similar
+objects is to put them in a geometry list-column, where each list
+element contains the geometry object of the corresponding record,
+or \code{data.frame} ``row''; this works well with the
+\pkg{tidyverse} package family.
+
+\section{Conventions}
+
+\subsection{Classes}
+The main classes introduced by package \pkg{sf} are
+
+\begin{description}
+\item[\code{sf}:] a \code{data.frame} (or \code{tbl\_df}) with one or more
+geometry list-column, and an attribute \code{sf\_column} indicating the
+{\em active} geometry list-column of class \code{sfc},
+\item[\code{sfc}:] a list-column with a set of feature geometries
+\item[\code{sfg}:] element in a geometry list-column, a feature geometry
+\item[\code{crs}:] a coordinate reference system, stored as attribute of an \code{sfc}
+\end{description}
+
+Except for \code{sfg}, all these classes are implemented as lists.
+Objects of class \code{sfg} are subtyped according to their class, classes have the following storage form:
+
+\begin{description}
+\item[\code{POINT}:] numeric vector with a single point
+\item[\code{MULTIPOINT}:] numeric matrix with zero or more points in rows
+\item[\code{LINESTRING}:] numeric matrix with zero or more points in rows
+\item[\code{POLYGON}:] list with zero or more numeric matrices (points as rows); polygon outer ring is followed by zero or more inner rings (holes)
+\item[\code{MULTILINESTRING}:] list with zero or more numeric matrices, points in rows
+\item[\code{MULTIPOLYGON}:] list of lists following the \code{POLYGON} structures
+\item[\code{GEOMETRYCOLLECTION}:] list of zero or more of the (classed) structures above
+\end{description}
+
+All geometries have an empty form, indicating the missing (or \code{NA}) equivalent for a geometry.
+
+\subsection{Functions and methods}
+
+Generic methods for \code{sf} objects are listed in table \ref{tab:methods}. Many of them are for creation, extraction, and conversion, and lots of them are not needed for every-day work. Where possible, methods act either on a geometry (\code{sfg}), a geometry set (\code{sfc}), or a geometry set with attributes (\code{sf}), and return an object of identical class. Coordinate reference systems (CRS) carry through all operations, except for \code{st\_transform}, which transforms coordinates from one reference system into another, and hence the CRS changes. 
+
+Functions are listed in table \ref{tab:functions}.
+Some functions or methods operate on both attributes and geometries, e.g. \code{aggregate} and \code{summarise} compute grouped statistics and group (union) corresponding geometries, and \code{st\_interpolate\_aw} carries out area-weighted interpolation \citep{aw}. Function \code{st\_join} joins pairs of tables based on a geometrical predicate such as \code{st\_intersects}.
+
+\begin{table}
+\begin{tabular}{lp{14cm}} \toprule
+class & methods \\ \midrule
+\code{sfg} & as.matrix, c, coerce, format, head, Ops, plot, print, st\_as\_binary, st\_as\_grob, st\_as\_text, st\_transform, st\_coordinates, st\_geometry,
+\geom{st\_boundary}, \geom{st\_buffer}, \geom{st\_centroid}, \geom{st\_convex\_hull}, \geom{st\_difference}, \geom{st\_intersection}, \geom{st\_line\_merge}, \geom{st\_make\_valid}, \geom{st\_node}, \geom{st\_point\_on\_surface}, \geom{st\_polygonize}, \geom{st\_segmentize}, \geom{st\_simplify}, \geom{st\_split}, \geom{st\_sym\_difference}, \geom{st\_triangulate}, \geom{st\_union}, \geom{st\_voronoi}, \cls{st\_cast}, \cls{st\_collection\_extract}, \cls{st\_is}, \cls{st\_zm} \\
+\code{sfc} & [, [<-, as.data.frame, c, coerce, format, Ops, print, rep, st\_as\_binary, st\_as\_text, st\_bbox, st\_coordinates, st\_crs, st\_crs<-, st\_geometry, st\_precision, st\_set\_precision, str, summary,
+\geom{st\_boundary}, \geom{st\_buffer}, \geom{st\_centroid}, \geom{st\_convex\_hull}, \geom{st\_difference}, 
+\geom{st\_intersection}, \geom{st\_line\_merge}, \geom{st\_make\_valid}, \geom{st\_node}, \geom{st\_point\_on\_surface}, \geom{st\_polygonize}, \geom{st\_segmentize}, \geom{st\_simplify}, \geom{st\_split}, \geom{st\_sym\_difference}, st\_transform, \geom{st\_triangulate}, \geom{st\_union}, \geom{st\_voronoi},
+\cls{st\_cast}, \cls{st\_collection\_extract}, \cls{st\_is}, \cls{st\_zm},
+\tv{obj\_sum}, \tv{type\_sum} \\
+\code{sf} & [, [[<-, \$<-, aggregate, cbind, coerce, merge, plot, print, rbind, 
+st\_agr, st\_agr<-, st\_bbox,
+st\_coordinates, st\_crs, st\_crs<-, st\_geometry, st\_geometry<-, st\_precision, st\_set\_precision, st\_transform,
+\geom{st\_boundary}, \geom{st\_buffer}, \geom{st\_centroid}, \geom{st\_convex\_hull}, \geom{st\_difference}, \geom{st\_intersection}, \geom{st\_line\_merge}, \geom{st\_make\_valid}, \geom{st\_node}, \geom{st\_point\_on\_surface}, \geom{st\_polygonize}, \geom{st\_segmentize}, \geom{st\_simplify}, \geom{st\_split}, \geom{st\_sym\_difference}, \geom{st\_triangulate}, \geom{st\_union}, \geom{st\_voronoi},
+\cls{st\_cast}, \cls{st\_collection\_extract}, \cls{st\_is}, \cls{st\_zm},
+\tv{anti\_join}, \tv{arrange}, \tv{distinct}, \tv{filter}, \tv{full\_join}, \tv{gather}, \tv{group\_by}, \tv{inner\_join}, \tv{left\_join}, \tv{nest}, \tv{mutate}, \tv{rename}, \tv{right\_join}, \tv{sample\_frac}, \tv{sample\_n}, \tv{select}, \tv{semi\_join}, \tv{separate}, \tv{slice}, \tv{spread},
+\tv{summarise}, \tv{transmute}, \tv{ungroup}, \tv{unite} \\
+\code{crs} & \$, is.na, Ops, print, st\_as\_text, st\_crs \\ \bottomrule
+\end{tabular}
+\caption{methods for \pkg{sf} classes; colours indicate \geom{geometry operation}, \cls{class manipulation},  \tv{tidyverse}; Ops refers to (a subset of) arithmetical operations}
+\label{tab:methods}
+\end{table}
+
+\begin{table}
+\begin{tabular}{p{3cm}p{11cm}} \toprule
+category & functions \\ \midrule
+binary predicates &
+ st\_contains,         
+ st\_contains\_properly, 
+ st\_covered\_by, st\_covers, st\_crosses,           
+ st\_disjoint, st\_equals, st\_equals\_exact      
+ st\_intersects, 
+ st\_is\_within\_distance,
+ st\_within, st\_touches,           
+ st\_overlaps \\
+binary operations &
+ st\_relate,             
+ st\_distance        \\
+unary operations &
+ st\_dimension,         
+ st\_area,              
+ st\_length,           
+ st\_is\_longlat,        
+ st\_is\_simple,        
+ st\_is\_valid,         
+ st\_jitter,           
+ st\_geohash,           
+ st\_geometry\_type \\    
+miscellaneous &
+ st\_sample,           
+ st\_line\_sample,       
+ st\_join,              
+ st\_interpolate\_aw,    
+ st\_make\_grid,         
+ st\_graticule,        
+ sf\_extSoftVersion,    
+ rawToHex,             
+ st\_proj\_info \\        
+setters &
+ st\_set\_agr,            
+ st\_set\_crs \\          
+constructors &
+ st\_sfc,               
+ st\_sf,               
+ st\_as\_sf,             
+ st\_as\_sfc,            
+ st\_point,             
+ st\_multipoint,        
+ st\_linestring,       
+ st\_multilinestring,  
+ st\_polygon,           
+ st\_multipolygon,      
+ st\_geometrycollection,
+ st\_combine, 
+ st\_bind\_cols \\        
+in- \& output &
+ st\_read,             
+ st\_read\_db,           
+ st\_write,             
+ st\_write\_db,          
+ read\_sf,             
+ write\_sf,     
+ st\_drivers,           
+ st\_layers \\           
+plotting &
+ st\_viewport,         
+ st\_wrap\_dateline,    
+ sf.colors      \\ 
+\bottomrule      
+\end{tabular}
+\caption{Functions provided by package \pkg{sf}, by functional category}
+\label{tab:functions}
+\end{table}
+
+\section{Serialisations}
+
+The simple feature access defines two serialisation standards: well-known-text (WKT) and well-known-binary (WKB). Well-known text is the default print form:
+\begin{example}
+> library(sf)
+Linking to GEOS 3.5.1, GDAL 2.1.2, proj.4 4.9.3, lwgeom 2.3.1 r15264
+> (pt <- st_point(c(0,1)))
+POINT (0 1)
+> (pol <- st_polygon(list(rbind(c(0,0), c(1,0), c(1,1), c(0,1), c(0,0)))))
+POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))
+\end{example}
+and \code{sfc} columns can be read from WKT \code{character} vectors, using \code{st\_as\_sfc}
+
+R native simple feature geometries can be written to WKB using \code{st\_as\_binary},
+\begin{example}
+> st_as_binary(st_point(c(0,1)))
+ [1] 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 f0 3f
+> st_as_binary(st_polygon(list(rbind(c(0,0), c(1,0), c(1,1), c(0,1), c(0,0)))))
+ [1] 01 03 00 00 00 01 00 00 00 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[26] 00 00 00 00 00 00 00 00 00 00 f0 3f 00 00 00 00 00 00 00 00 00 00 00 00 00
+[51] 00 f0 3f 00 00 00 00 00 00 f0 3f 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[76] f0 3f 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+\end{example}
+and similarly, binary encoded geometries can be read back using \code{st\_as\_sfc}.
+
+All communication to and from the underlying libraries GDAL, GEOS and
+liblwgeom as well as direct reading and writing of geometry BLOBs in
+spatial databases use the binary serialisation and deserialisation,
+written in C++. This makes code not only fast but also robust:
+for all possible geometry classes, a single interface is used to
+communicate to a variety of endpoints.
+
+\section{Spherical geometry}
+
+The GEOS library provides a large set of operations for data in a
+two-dimensional space. For unprojected, geographic data coordinates
+are longitude and latitude, and describe points on a sphere (or
+ellipsoid), not on a plane. \pkg{sf} allows such data to be passed to
+GEOS geometric operations, but will emit a message if this happens.
+For the functions st\_area, st\_length, st\_distance (points only),
+and st\_segmentize specialized spherical functions are used, taken
+from \CRANpkg{geosphere}. Function st\_sample has been modified to
+work for spherical coordinates.
+
+It would be nice to get a (more) complete set of functions working
+for spherical geometry. Potential candidate libraries to be used
+for this include \CRANpkg{s2} \citep{s2}, liblwgeom (part of PostGIS),
+CGAL \citep{cgal}, and boost.Geometry.
+
+\section{Tidy tools}
+
+During the development of \pkg{sf}, considerable effort was put into
+making the new data structures work with the tidyverse. This was
+done by providing methods for dplyr verbs (table \ref{tab:methods}),
+and by helping develop a \pkg{ggplot2} geom function (next section)
+that plots maps well.
+
+The \href{https://cran.r-project.org/web/packages/tidyverse/vignettes/manifesto.html}{tidy
+tools manifesto} prescribes four principles, which we will comment on:
+
+\begin{enumerate} 
+\item {\bf Reuse existing data structures.} We use the simplest R structures 
+(numeric vector for point, matrix for point set, list for any other set),
+and fully support two standardized serializations (WKT, WKB)
+\item {\bf Compose simple functions with the pipe.}
+functions and methods were designed such that they can be used easily in
+pipe-based workflows; replacement functions like \code{st\_crs<-} were
+augmented by \code{st\_set\_crs} to make this look better.
+\item {\bf Embrace functional programming.} Functions were kept type-safe,
+empty geometries and empty lists are supported, operation overloading was
+done creatively e.g. by providing \code{Ops} for scaling and shifting a polygon:
+\begin{example}
+> pol * 2 + pt
+POLYGON ((0 1, 2 1, 2 3, 0 3, 0 1))
+\end{example}
+Functions like \code{st\_join} for a spatial join allow the user to pass
+a join function that is {\em compatible} with \code{st\_intersects}, making the
+spatial predicate applied for the join completely customisable.
+\item {\bf Design for humans.}
+with the experience of having (co-)written and maintained \pkg{sp} for a
+decade, we have tried to keep \pkg{sf} simple and lean. Methods were used as
+much as possible to keep the namespace small. All functions and
+methods start with \code{st\_} (for ``spacetime'', following
+PostGIS convention) to keep them recognizable, and searchable
+using tab-completion.
+\end{enumerate}
+
+\section{Plotting}
+
+Figure 1 (left) shows the default plot for an \code{sf} object with more than one attribute: no color keys are given, default colours depend on whether the variable is numeric (top) or a factor (bottom). This plot was obtained by:
+<<eval=TRUE,figure=FALSE>>=
+library(sf)
+nc = read_sf(system.file("gpkg/nc.gpkg", package="sf"))
+plot(nc[,c(9,5)])
+@
+When we plot a single attribute, a color key is default (unless \code{key.pos=NULL}). The following command
+<<eval=FALSE>>=
+plot(nc[,9], key.pos = 1, axes = TRUE, graticule = TRUE)
+@
+adds axes and a graticule (longitude/latitude grid lines) on the right side of figure \ref{fig:plot}.
+
+\begin{figure}
+\includegraphics[width=.5\columnwidth]{pebesma-001.pdf}
+\includegraphics[width=.5\columnwidth]{pebesma-002.pdf}
+\caption{left: default plot for \code{sf} object with two attributes; right: plot for a single attribute with color key, axes and graticule }
+\label{fig:plot}
+\end{figure}
+
+Figure \ref{fig:ggplot} shows a plot generated by \code{ggplot2}, when a version later than 2.2.1 is used:
+<<eval=FALSE>>=
+# devtools::install_github("tidyverse/ggplot2")
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+nc2 <- nc %>% st_transform(32119) %>% select(SID74, SID79, geom) %>% gather(VAR, SID, -geom)
+ggplot() + geom_sf(data = nc2, aes(fill = SID)) + facet_wrap(~VAR, ncol = 1)
+@
+
+\begin{figure}[bt]
+\begin{center}
+\includegraphics[width=.65\columnwidth]{ggplot2.pdf}
+\end{center}
+\caption{plot generated with \code{ggplot2::geom\_sf}, the now curved graticules follow constant long/lat lines}
+\label{fig:ggplot}
+\end{figure}
+
+\section{Rasters, time series, and units}
+
+For some users, starting with \pkg{sf} feels like closing an
+old book (\pkg{sp}), and opening a new one. But it is not as if
+this new book has a similar content, or size. It is unsure when,
+or even whether at all, the hundreds of packages that use \pkg{sp}
+classes will be modified to use the \code{sf} classes. 
+
+The most heard question is where raster data are in the new book:
+\pkg{sp} provides simple classes for gridded data, \CRANpkg{raster}
+\citep{raster} provides heavy duty classes and a massive amount
+of methods to work with them, tightly integrated with the \pkg{sp}
+vector classes. At the time of writing this, we can only say that
+this is an area of active discussion, exploration and development,
+and we will be happy to point interested readers to where the public
+components of this discussion are taking place.
+
+Besides raster data, time series for spatial features (e.g. for
+monitoring stations) are hard to map onto \code{sf} objects: one
+would either have to put time slices in columns, or add a time
+column and repeat the feature geometry for each observation.  Both
+challenges, spatial time series and raster (and raster time series)
+are focus of the \href{https://github.com/r-spatial/stars}{stars
+project}.
+
+A new aspect of the package is the ability to retrieve spatial
+measures and to set e.g. distance parameters with explicit measurement
+units \citep{units}:
+<<>>=
+st_area(st_transform(nc[1,], 2264)) # NC state plane, US foot
+st_crs(2264)$units
+st_area(st_transform(nc[1,], 2264)) %>% units::set_units(km^2) # convert:
+@
+which might first confuse, but has the potential prevent a whole
+category of scientific errors.
+
+\section{Summary and further reading}
+
+We present a new package, \pkg{sf}, for simple features in R, as
+a modern alternative for parts of the \pkg{sp}-family of packages.
+It provides new foundational classes to handle for spatial vector
+data in R, and has been received with considerable enthusiasm and
+uptake. While implementing \pkg{sf}, several well-proven concepts
+have been maintained (separation of geometries and attributes,
+libraries used), new links have been made (dplyr, ggplot2, spatial
+databases), and new concepts have been explored and implemented
+(units, spatial indexes).
+
+For further reading into the full capabilities of \pkg{sf} and its
+rationale, the reader is refered to the six vignettes that come
+with the package.
+
+\section{Acknowledgments}
+
+Writing \pkg{sf} would not have been possible without all the prior
+work and continuous help of Roger Bivand; package contributers are
+Ian Cook, Tim Keitt, Michael Sumner, Robin Lovelace, Hadley Wickham,
+Jeroen Ooms, and Etienne Racine. All contributors to github issues
+are also acknowledged.  Special thanks go to Dirk Eddelbuettel,
+for developing \CRANpkg{Rcpp} \citep{rcpp, dirk}.
+
+Support from the R Consortium has been very important for the
+development, visibility and fast adoption of \code{sf}, and is
+gratefully acknowledged.
+
+\bibliography{pebesma}
+
+\address{Edzer Pebesma\\
+  Institute for Geoinformatics\\
+  Hei{\ss}enbergstra{\ss}e 2\\
+  M\"{u}nster, Germany\\}
+  (\url{https://orcid.org/0000-0001-8049-7069}) \\
+  \email{edzer.pebesma@uni-muenster.de}
